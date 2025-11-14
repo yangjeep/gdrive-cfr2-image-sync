@@ -48,6 +48,7 @@ interface SyncResult {
   filesSynced: number;
   filesSkipped: number;
   filesFailed: number;
+  filesDeleted: number;
   errors: string[];
 }
 
@@ -59,6 +60,7 @@ interface SyncSummary {
   filesSynced: number;
   filesSkipped: number;
   filesFailed: number;
+  filesDeleted: number;
 }
 
 export default {
@@ -151,6 +153,7 @@ async function handleBulkSync(env: Env): Promise<Response> {
           filesSynced: 0,
           filesSkipped: 0,
           filesFailed: 0,
+          filesDeleted: 0,
         },
         details: [],
         message: "No properties with Image Folder URL found",
@@ -167,6 +170,7 @@ async function handleBulkSync(env: Env): Promise<Response> {
       filesSynced: 0,
       filesSkipped: 0,
       filesFailed: 0,
+      filesDeleted: 0,
     };
 
     for (const property of properties) {
@@ -185,6 +189,7 @@ async function handleBulkSync(env: Env): Promise<Response> {
         summary.filesSynced += result.filesSynced;
         summary.filesSkipped += result.filesSkipped;
         summary.filesFailed += result.filesFailed;
+        summary.filesDeleted += result.filesDeleted;
       } catch (error) {
         console.error(`Error syncing property ${property.slug}:`, error);
         results.push({
@@ -193,6 +198,7 @@ async function handleBulkSync(env: Env): Promise<Response> {
           filesSynced: 0,
           filesSkipped: 0,
           filesFailed: 0,
+          filesDeleted: 0,
           errors: [error instanceof Error ? error.message : "Unknown error"],
         });
         summary.propertiesFailed++;
@@ -288,6 +294,7 @@ async function syncProperty(
     filesSynced: 0,
     filesSkipped: 0,
     filesFailed: 0,
+    filesDeleted: 0,
     errors: [],
   };
 
@@ -326,6 +333,22 @@ async function syncProperty(
       } catch (error) {
         result.filesFailed++;
         const errorMsg = `Failed to sync ${file.name}: ${error instanceof Error ? error.message : "Unknown error"}`;
+        result.errors.push(errorMsg);
+        console.error(errorMsg);
+      }
+    }
+
+    // Delete orphaned files from R2 (files that exist in R2 but not in Drive)
+    // Only delete if Drive folder has files (prevents accidental mass deletion)
+    if (imageFiles.length > 0) {
+      try {
+        const deletedCount = await deleteOrphanedFiles(property.slug, imageFiles, env.R2_BUCKET);
+        result.filesDeleted = deletedCount;
+        if (deletedCount > 0) {
+          console.log(`Deleted ${deletedCount} orphaned files for ${property.slug}`);
+        }
+      } catch (error) {
+        const errorMsg = `Failed to delete orphaned files: ${error instanceof Error ? error.message : "Unknown error"}`;
         result.errors.push(errorMsg);
         console.error(errorMsg);
       }
@@ -377,6 +400,66 @@ async function compareAndSyncFile(
   console.log(`Syncing ${r2Key} - ${r2Hash ? 'hash changed' : 'new file'}`);
   await downloadAndUploadFile(slug, driveFile, bucket, accessToken, driveFile.md5Checksum);
   return { synced: true };
+}
+
+/**
+ * List all files in R2 for a property slug
+ */
+async function listR2Files(bucket: R2Bucket, slug: string): Promise<string[]> {
+  const prefix = `${slug}/`;
+  const files: string[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const options: { prefix: string; cursor?: string } = {
+      prefix,
+    };
+    if (cursor) {
+      options.cursor = cursor;
+    }
+
+    const listResult = await bucket.list(options);
+    files.push(...listResult.objects.map(obj => obj.key));
+    cursor = listResult.truncated ? listResult.cursor : undefined;
+  } while (cursor);
+
+  return files;
+}
+
+/**
+ * Delete orphaned files from R2 that no longer exist in Drive
+ */
+async function deleteOrphanedFiles(
+  slug: string,
+  driveFiles: DriveFile[],
+  bucket: R2Bucket
+): Promise<number> {
+  // Create a Set of expected R2 keys from Drive files (using sanitized filenames)
+  const expectedKeys = new Set<string>();
+  for (const driveFile of driveFiles) {
+    const sanitizedFilename = driveFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const r2Key = `${slug}/${sanitizedFilename}`;
+    expectedKeys.add(r2Key);
+  }
+
+  // List all existing R2 files for this property
+  const r2Files = await listR2Files(bucket, slug);
+  let deletedCount = 0;
+
+  // Delete files that exist in R2 but not in expected set
+  for (const r2Key of r2Files) {
+    if (!expectedKeys.has(r2Key)) {
+      try {
+        await bucket.delete(r2Key);
+        deletedCount++;
+        console.log(`Deleted orphaned file: ${r2Key}`);
+      } catch (error) {
+        console.error(`Failed to delete ${r2Key}: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }
+    }
+  }
+
+  return deletedCount;
 }
 
 /**
