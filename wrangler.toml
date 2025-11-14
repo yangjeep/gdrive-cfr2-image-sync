@@ -1,4 +1,4 @@
-name = "rental-manager-image-sync"
+name = "rental-manager-image-sync-demo"
 main = "src/index.ts"
 compatibility_date = "2024-11-13"
 
