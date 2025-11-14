@@ -29,6 +29,14 @@ crons = ["0 * * * *"]  # Default: Every hour
 # - AIRTABLE_BASE_ID
 # - SYNC_SECRET (required for securing manual trigger endpoint - Bearer token authentication)
 
+# Observability Configuration
+[observability]
+[observability.logs]
+enabled = false
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
 # Demo Environment
 [env.demo]
 name = "rental-manager-image-sync-demo"
@@ -48,4 +56,12 @@ crons = ["0 * * * *"]  # Default: Every hour
 # - AIRTABLE_TOKEN
 # - AIRTABLE_BASE_ID
 # - SYNC_SECRET (required for securing manual trigger endpoint - Bearer token authentication)
+
+# Observability Configuration for Demo
+[env.demo.observability]
+[env.demo.observability.logs]
+enabled = false
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
 
